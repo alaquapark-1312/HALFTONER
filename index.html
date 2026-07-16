@@ -289,6 +289,7 @@ select.preset-sel:hover{border-color:var(--acc);}
 <body>
 <input type="file" id="fileInput" accept="image/*,video/mp4,video/webm,video/quicktime" style="display:none">
 <input type="file" id="presetInput" accept=".json" style="display:none">
+<input type="file" id="svgShapeInput" accept=".svg,image/svg+xml" style="display:none">
 
 <div id="topbar">
   <div class="logo">HALF<em>T</em>ONER<small>PRO+</small></div>
@@ -405,7 +406,7 @@ const LANGS = {
     p_fanzine:'FANZINEA (fotokopia gordina)', p_press:'CMYK OFFSETA (prentsa)',
     p_fineart:'ARTE GRABATUA (diamante)', p_xerox:'XEROX (bayer dither)',
     toast_copied:'KOPIATUTA ✓', toast_link:'ESTEKA KOPIATUTA ✓', toast_nocam:'KAMERA EZ DAGO ESKURAGARRI',
-    toast_rec:'GRABATZEN…', toast_rec_done:'BIDEOA GORDETA ✓',
+    toast_rec:'GRABATZEN…', toast_rec_done:'BIDEOA GORDETA ✓', toast_svg:'SVG FORMA KARGATUTA ✓',
     live:'ZUZENEAN',
   },
   es: {
@@ -437,7 +438,7 @@ const LANGS = {
     p_fanzine:'FANZINE (fotocopia cruda)', p_press:'CMYK OFFSET (imprenta)',
     p_fineart:'GRABADO ARTE (diamante)', p_xerox:'XEROX (bayer dither)',
     toast_copied:'COPIADO ✓', toast_link:'ENLACE COPIADO ✓', toast_nocam:'CÁMARA NO DISPONIBLE',
-    toast_rec:'GRABANDO…', toast_rec_done:'VÍDEO GUARDADO ✓',
+    toast_rec:'GRABANDO…', toast_rec_done:'VÍDEO GUARDADO ✓', toast_svg:'FORMA SVG CARGADA ✓',
     live:'EN VIVO',
   },
   en: {
@@ -469,7 +470,7 @@ const LANGS = {
     p_fanzine:'FANZINE (raw photocopy)', p_press:'CMYK OFFSET (print)',
     p_fineart:'FINE ART (diamond etch)', p_xerox:'XEROX (bayer dither)',
     toast_copied:'COPIED ✓', toast_link:'LINK COPIED ✓', toast_nocam:'CAMERA NOT AVAILABLE',
-    toast_rec:'RECORDING…', toast_rec_done:'VIDEO SAVED ✓',
+    toast_rec:'RECORDING…', toast_rec_done:'VIDEO SAVED ✓', toast_svg:'SVG SHAPE LOADED ✓',
     live:'LIVE',
   }
 };
@@ -609,7 +610,7 @@ void main(){
 
 const FS_SHAPES=`
 precision highp float;
-uniform sampler2D u_img;uniform vec2 u_res;
+uniform sampler2D u_img;uniform sampler2D u_stamp;uniform vec2 u_res;
 uniform float u_cell,u_angle,u_shape,u_splitX;
 uniform vec3 u_ink,u_paper;
 float luma(vec3 c){return dot(c,vec3(.299,.587,.114));}
@@ -644,6 +645,14 @@ void main(){
   float l=luma(texture2D(u_img,suv).rgb);
   float sc=max(l*u_cell*.5*.96,.01);
   vec2 ln=(rfc-ccr)/sc;
+  if(u_shape>6.5){
+    float inside=step(abs(ln.x),1.)*step(abs(ln.y),1.);
+    vec2 tuv=vec2(ln.x*.5+.5,.5-ln.y*.5);
+    vec4 st=texture2D(u_stamp,tuv);
+    float a=st.a*inside;
+    gl_FragColor=vec4(mix(u_paper,st.rgb,a),1.);
+    return;
+  }
   float aa=1.5/sc;
   float sdf;
   if(u_shape<.5)      sdf=sdfHex(ln);
@@ -816,6 +825,7 @@ const state={
   splitActive:false, splitX:-1,
   zoom:1, panX:0, panY:0,
   adjust:{brightness:0,contrast:0,saturation:0,blur:0,black:0,white:255,posterize:0},
+  customSVG:null,
   params:{}
 };
 const _EFF0=getEFF();
@@ -870,6 +880,15 @@ gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
 gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
 
+// Stamp texture for custom SVG shape (unit 1)
+const stampTex=gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D,stampTex);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([0,0,0,0]));
+
 function u(p,n){return gl.getUniformLocation(p,n);}
 function hexRGB(h){
   const n=parseInt(h.slice(1),16);
@@ -918,9 +937,13 @@ function render(){
   }else if(eff==='shapes'){
     gl.uniform1f(u(prog,'u_cell'),p.cellSize);
     gl.uniform1f(u(prog,'u_angle'),p.angle*D2R);
-    gl.uniform1f(u(prog,'u_shape'),SHAPE_LIST.indexOf(p.shape));
+    gl.uniform1f(u(prog,'u_shape'),p.shape==='custom'?7:SHAPE_LIST.indexOf(p.shape));
     gl.uniform3fv(u(prog,'u_ink'),hexRGB(p.inkColor));
     gl.uniform3fv(u(prog,'u_paper'),hexRGB(p.paperColor));
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D,stampTex);
+    gl.uniform1i(u(prog,'u_stamp'),1);
+    gl.activeTexture(gl.TEXTURE0);
   }else if(eff==='riso'){
     gl.uniform1f(u(prog,'u_cell'),p.cellSize);
     gl.uniform1f(u(prog,'u_nc'),p.numColors);
@@ -1513,6 +1536,7 @@ function buildControls(eff){
       const ci=document.createElement('input');ci.type='color';ci.value=p[c.id]??c.def;
       ci.addEventListener('input',()=>{
         state.params[eff][c.id]=ci.value;sw.style.background=ci.value;render();schedHistory();
+        if(eff==='shapes'&&c.id==='inkColor'&&state.customSVG) rasterizeStamp();
       });
       sw.appendChild(ci);
       const lbl=document.createElement('span');lbl.className='ctrl-label';lbl.textContent=t(c.lk);
@@ -1531,6 +1555,25 @@ function buildControls(eff){
         });
         sr.appendChild(btn);
       }
+      // Custom SVG shape button (visible when loaded)
+      if(state.customSVG){
+        const cbtn=document.createElement('div');
+        cbtn.className='shape-btn'+(p[c.id]==='custom'?' active':'');
+        cbtn.textContent='◈ CUSTOM';
+        cbtn.addEventListener('click',()=>{
+          state.params[eff][c.id]='custom';
+          sr.querySelectorAll('.shape-btn').forEach(b=>b.classList.remove('active'));
+          cbtn.classList.add('active');render();pushHistory();
+        });
+        sr.appendChild(cbtn);
+      }
+      // Loader button
+      const lbtn=document.createElement('div');
+      lbtn.className='shape-btn';
+      lbtn.style.borderStyle='dashed';
+      lbtn.textContent='✚ SVG';
+      lbtn.addEventListener('click',()=>document.getElementById('svgShapeInput').click());
+      sr.appendChild(lbtn);
       row.appendChild(sr);
 
     }else if(c.t==='opts'){
@@ -1578,6 +1621,9 @@ function applyPreset(key){
 function savePresetJSON(){
   const data={app:'halftoner-pro-plus',version:3,...snapshotObj()};
   data.params={[state.effect]:data.params[state.effect]};
+  if(state.effect==='shapes'&&state.params.shapes.shape==='custom'&&state.customSVG){
+    data.customSVG=state.customSVG;
+  }
   dlFile(JSON.stringify(data,null,2),'halftoner_preset.json','application/json');
 }
 document.getElementById('presetInput').addEventListener('change',e=>{
@@ -1591,6 +1637,11 @@ document.getElementById('presetInput').addEventListener('change',e=>{
         const pp=data.params&&(data.params[data.effect]||data.params);
         if(pp) Object.assign(state.params[data.effect],pp);
         if(data.adjust) state.adjust={...ADJ_DEF,...data.adjust};
+        if(data.customSVG&&data.customSVG.inner&&data.customSVG.vb){
+          const clean=sanitizeSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${data.customSVG.vb.x} ${data.customSVG.vb.y} ${data.customSVG.vb.w} ${data.customSVG.vb.h}">${data.customSVG.inner}</svg>`);
+          if(clean){state.customSVG=clean;rasterizeStamp();}
+        }
+        if(state.params.shapes.shape==='custom'&&!state.customSVG) state.params.shapes.shape='hex';
         document.querySelectorAll('.eff-tab').forEach(x=>{
           x.classList.toggle('active',x.dataset.eff===data.effect);
         });
@@ -1601,6 +1652,79 @@ document.getElementById('presetInput').addEventListener('change',e=>{
     }catch(err){console.error('Invalid preset',err);}
   };
   rd.readAsText(f);
+  e.target.value='';
+});
+
+// ═══════════════════════════════════════════════════════════
+//  CUSTOM SVG SHAPE
+// ═══════════════════════════════════════════════════════════
+function sanitizeSVG(text){
+  const doc=new DOMParser().parseFromString(text,'image/svg+xml');
+  const root=doc.documentElement;
+  if(root.nodeName.toLowerCase()!=='svg') return null;
+  // Strip scripts and event handlers
+  doc.querySelectorAll('script,foreignObject').forEach(n=>n.remove());
+  doc.querySelectorAll('*').forEach(el=>{
+    [...el.attributes].forEach(a=>{
+      if(/^on/i.test(a.name)||/javascript:/i.test(a.value)) el.removeAttribute(a.name);
+    });
+  });
+  // viewBox
+  let vb=root.getAttribute('viewBox');
+  let x=0,y=0,w=100,h=100;
+  if(vb){
+    const p=vb.trim().split(/[\s,]+/).map(Number);
+    if(p.length===4&&p.every(isFinite)){[x,y,w,h]=p;}
+  }else{
+    const aw=parseFloat(root.getAttribute('width')),ah=parseFloat(root.getAttribute('height'));
+    if(isFinite(aw)&&isFinite(ah)){w=aw;h=ah;}
+  }
+  if(w<=0||h<=0){w=100;h=100;}
+  return {inner:root.innerHTML, vb:{x,y,w,h}};
+}
+
+function rasterizeStamp(){
+  if(!state.customSVG) return;
+  const {inner,vb}=state.customSVG;
+  const ink=state.params.shapes.inkColor;
+  const S=160;
+  // Fit viewBox into square, centered; color set for currentColor support
+  const mx=Math.max(vb.w,vb.h);
+  const vx=vb.x-(mx-vb.w)/2, vy=vb.y-(mx-vb.h)/2;
+  const wrapped=`<svg xmlns="http://www.w3.org/2000/svg" width="${S}" height="${S}" viewBox="${vx} ${vy} ${mx} ${mx}" color="${ink}">${inner}</svg>`;
+  const url=URL.createObjectURL(new Blob([wrapped],{type:'image/svg+xml'}));
+  const img=new Image();
+  img.onload=()=>{
+    const c=document.createElement('canvas');
+    c.width=S;c.height=S;
+    c.getContext('2d').drawImage(img,0,0,S,S);
+    URL.revokeObjectURL(url);
+    gl.bindTexture(gl.TEXTURE_2D,stampTex);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,c);
+    if(state.effect==='shapes'&&state.params.shapes.shape==='custom') render();
+  };
+  img.onerror=()=>URL.revokeObjectURL(url);
+  img.src=url;
+}
+
+function loadCustomSVGShape(file){
+  const rd=new FileReader();
+  rd.onload=()=>{
+    const parsed=sanitizeSVG(rd.result);
+    if(!parsed){console.error('Invalid SVG');return;}
+    state.customSVG=parsed;
+    state.params.shapes.shape='custom';
+    rasterizeStamp();
+    if(state.effect==='shapes') buildControls('shapes');
+    render();
+    pushHistory();
+    toast('toast_svg');
+  };
+  rd.readAsText(file);
+}
+document.getElementById('svgShapeInput').addEventListener('change',e=>{
+  const f=e.target.files[0];
+  if(f) loadCustomSVGShape(f);
   e.target.value='';
 });
 
@@ -1705,6 +1829,27 @@ function svgLinear(data,W,H,p){
 function svgShapes(data,W,H,p){
   const{cellSize:cs,angle,shape,inkColor,paperColor}=p;
   const rot=mkRot(angle),bb=gridBBox(W,H,rot,cs);
+
+  // Custom SVG shape: embed once in defs, instance with <use>
+  if(shape==='custom'&&state.customSVG){
+    const{inner,vb}=state.customSVG;
+    const mx=Math.max(vb.w,vb.h);
+    const vcx=vb.x+vb.w/2, vcy=vb.y+vb.h/2;
+    let uses='';
+    for(let cy=bb.c0y;cy<=bb.c1y;cy++)for(let cx=bb.c0x;cx<=bb.c1x;cx++){
+      const[rx,ry]=[(cx+.5)*cs,(cy+.5)*cs];
+      const[wx,wy]=rot.inv(rx,ry);
+      const svgX=wx,svgY=H-wy;
+      if(wx<0||wx>=W||svgY<0||svgY>=H) continue;
+      const l=lumaAt(data,W,H,wx,svgY);
+      const sc=l*cs*.5*.96;
+      if(sc<.3) continue;
+      const s=(2*sc/mx).toFixed(4);
+      uses+=`<use href="#stamp0" transform="translate(${svgX.toFixed(2)},${svgY.toFixed(2)}) rotate(${angle.toFixed(1)}) scale(${s}) translate(${(-vcx).toFixed(2)},${(-vcy).toFixed(2)})"/>`;
+    }
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><defs><clipPath id="c0"><rect width="${W}" height="${H}"/></clipPath><g id="stamp0">${inner}</g></defs><rect width="${W}" height="${H}" fill="${paperColor}"/><g color="${inkColor}" clip-path="url(#c0)">${uses}</g></svg>`;
+  }
+
   function shapeEl(cx,cy,sc,shape){
     if(sc<.3) return'';
     const tr=`translate(${cx.toFixed(2)},${cy.toFixed(2)}) rotate(${angle.toFixed(1)})`;
@@ -1905,6 +2050,7 @@ function loadStateURL(){
       state.effect=o.e;
       if(o.p) Object.assign(state.params[o.e],o.p);
       if(o.a) state.adjust={...ADJ_DEF,...o.a};
+      if(state.params.shapes.shape==='custom'&&!state.customSVG) state.params.shapes.shape='hex';
       document.querySelectorAll('.eff-tab').forEach(x=>{
         x.classList.toggle('active',x.dataset.eff===o.e);
       });
